@@ -1,0 +1,82 @@
+// language: JavaScript, file: server.js
+// *Node.js сервер с чатом и WebRTC-сигналингом для звонков.*
+
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: { origin: '*', methods: ['GET', 'POST'] }
+});
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// храним онлайн-юзеров
+const onlineUsers = new Map();
+
+io.on('connection', (socket) => {
+    console.log('connected:', socket.id);
+
+    // регистрация пользователя по имени
+    socket.on('register', (name) => {
+        onlineUsers.set(socket.id, { name, socketId: socket.id });
+        // шлём список всем
+        io.emit('users', Array.from(onlineUsers.values()));
+        console.log('registered:', name);
+    });
+
+    // чат-сообщение
+    socket.on('message', ({ to, text, from }) => {
+        // ищем получателя по socketId
+        if (to && onlineUsers.has(to)) {
+            io.to(to).emit('message', { from, text, time: Date.now() });
+        } else {
+            // broadcast всем если to не указан
+            socket.broadcast.emit('message', { from, text, time: Date.now() });
+        }
+    });
+
+    // WebRTC-сигналинг для звонков
+    socket.on('call-user', ({ to, offer, from }) => {
+        if (onlineUsers.has(to)) {
+            io.to(to).emit('incoming-call', { from, offer, fromId: socket.id });
+        }
+    });
+
+    socket.on('call-accepted', ({ to, answer }) => {
+        if (onlineUsers.has(to)) {
+            io.to(to).emit('call-accepted', { answer });
+        }
+    });
+
+    socket.on('ice-candidate', ({ to, candidate }) => {
+        if (onlineUsers.has(to)) {
+            io.to(to).emit('ice-candidate', { candidate });
+        }
+    });
+
+    socket.on('call-ended', ({ to }) => {
+        if (onlineUsers.has(to)) {
+            io.to(to).emit('call-ended');
+        }
+    });
+
+    // отключение
+    socket.on('disconnect', () => {
+        onlineUsers.delete(socket.id);
+        io.emit('users', Array.from(onlineUsers.values()));
+        console.log('disconnected:', socket.id);
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log('server on port', PORT);
+});
